@@ -62,12 +62,19 @@ internal class SessionImpl(
             protocol.receive().collect { frame ->
                 decodingFrameId = frame.frameId
                 when (frame.kind) {
-                    ProtocolKind.MESSAGE ->
-                        incoming.send(MessageCodec.decode(frame.payload))
+                    ProtocolKind.MESSAGE -> {
+                        val decoded = MessageCodec.decode(frame.payload)
+                        val result = incoming.trySend(decoded)
+                        if (result.isFailure) {
+                            // The message consumer is too slow; dropping
+                            // keeps the pump free for every other kind.
+                            Log.w(TAG, "dropping message ${frame.frameId}: queue full")
+                        }
+                    }
 
                     ProtocolKind.REQUEST -> {
                         val decoded = RequestCodec.decode(frame.payload)
-                        incomingRequests.send(
+                        val result = incomingRequests.trySend(
                             IncomingRequestImpl(
                                 type = decoded.type,
                                 data = decoded.data,
@@ -76,6 +83,9 @@ internal class SessionImpl(
                                 protocol = protocol
                             )
                         )
+                        if (result.isFailure) {
+                            Log.w(TAG, "dropping request ${frame.frameId}: queue full")
+                        }
                     }
 
                     ProtocolKind.RESPONSE -> {
@@ -92,18 +102,29 @@ internal class SessionImpl(
                     ProtocolKind.TRANSFER_START -> {
                         val (metadata, totalBytes) = TransferCodec.decodeStart(frame.payload)
                         val frames = Channel<TransferFrame>(capacity = 64)
-                        transferContexts[frame.contextId] = frames
-                        incomingTransfers.send(
-                            IncomingTransferImpl(
-                                metadata = metadata,
-                                totalBytes = totalBytes,
-                                contextId = frame.contextId,
-                                scope = scope,
-                                protocol = protocol,
-                                frameIds = frameIds,
-                                frames = frames
-                            )
+                        val contextId = frame.contextId
+                        transferContexts[contextId] = frames
+                        val offer = IncomingTransferImpl(
+                            metadata = metadata,
+                            totalBytes = totalBytes,
+                            contextId = contextId,
+                            scope = scope,
+                            protocol = protocol,
+                            frameIds = frameIds,
+                            frames = frames,
+                            onSettled = {
+                                transferContexts.remove(contextId)
+                                protocol.closeContext(contextId)
+                            }
                         )
+                        offer.startOfferTimeout(OFFER_TIMEOUT_MS)
+                        val result = incomingTransfers.trySend(offer)
+                        if (result.isFailure) {
+                            // Nobody is collecting offers; rejecting frees
+                            // the peer instead of stalling it.
+                            Log.w(TAG, "dropping transfer offer $contextId: queue full")
+                            offer.reject()
+                        }
                     }
 
                     ProtocolKind.TRANSFER_DATA,
@@ -198,14 +219,20 @@ internal class SessionImpl(
 
     override fun transfer(source: TransferSource): Transfer {
         val frames = Channel<com.zevarc.zevbond.transfer.TransferFrame>(capacity = 64)
+        val contextId = frameIds.next()
         val transfer = TransferImpl(
             scope = scope,
             protocol = protocol,
             frameIds = frameIds,
+            contextId = contextId,
             frames = frames,
-            source = source
+            source = source,
+            onSettled = {
+                transferContexts.remove(contextId)
+                protocol.closeContext(contextId)
+            }
         )
-        transferContexts[transfer.contextId] = frames
+        transferContexts[contextId] = frames
         return transfer
     }
 
@@ -232,5 +259,8 @@ internal class SessionImpl(
         const val TAG = "ZevBond"
 
         const val MAX_REQUEST_PAYLOAD = 1024 * 1024
+
+        /** How long an unclaimed incoming transfer offer stays open. */
+        const val OFFER_TIMEOUT_MS = 30_000L
     }
 }

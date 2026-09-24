@@ -21,4 +21,11 @@ internal interface Protocol {
      * Sends ERROR to the peer when possible, then closes the protocol.
      */
     suspend fun signalProtocolError(offendingFrameId: Long, cause: Exception)
+
+    /**
+     * Releases the protocol state kept for one Transfer/Stream context.
+     * Called by the session once a context has settled; frames for the
+     * context arriving afterwards are protocol violations.
+     */
+    fun closeContext(contextId: Long)
 }

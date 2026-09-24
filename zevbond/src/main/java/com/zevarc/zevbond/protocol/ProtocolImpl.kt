@@ -109,6 +109,10 @@ internal class ProtocolImpl(
         protocolError(offendingFrameId, cause)
     }
 
+    override fun closeContext(contextId: Long) {
+        expectedSequence.remove(contextId)
+    }
+
     /**
      * A decode, validation, or peer ERROR frame is fatal: report ERROR to
      * the peer when possible, then tear the protocol down.

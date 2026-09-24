@@ -10,6 +10,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Drives an outgoing transfer: announces it, streams source chunks as
@@ -23,12 +24,12 @@ internal class TransferImpl(
     private val scope: CoroutineScope,
     private val protocol: Protocol,
     private val frameIds: FrameIdGenerator,
+    val contextId: Long,
     private val frames: Channel<TransferFrame>,
     private val source: TransferSource,
+    private val onSettled: () -> Unit,
     private val chunkSize: Int = DEFAULT_CHUNK_SIZE
 ) : Transfer {
-
-    val contextId: Long = frameIds.next()
 
     private val progressFlow = MutableStateFlow(
         TransferProgress(bytesTransferred = 0L, totalBytes = source.totalBytes)
@@ -38,6 +39,9 @@ internal class TransferImpl(
 
     /** Completes on the first cancel() call; later ones are no-ops. */
     private val cancelRequested = CompletableDeferred<Unit>()
+
+    /** Guards the one-shot end-of-transfer cleanup. */
+    private val settled = AtomicBoolean(false)
 
     private var nextSequence = 0
 
@@ -77,6 +81,7 @@ internal class TransferImpl(
                     // source that never resumes.
                     if (!outcome.isCompleted && !cancelRequested.isCompleted) {
                         senderJob.cancel()
+                        markSettled()
                         outcome.completeExceptionally(
                             IllegalStateException("Session closed during transfer")
                         )
@@ -87,6 +92,7 @@ internal class TransferImpl(
                     cancelRequested.complete(Unit)
                     frames.close()
                     senderJob.cancel()
+                    markSettled()
                     outcome.complete(TransferResult.Cancelled)
                     return@launch
                 }
@@ -107,6 +113,7 @@ internal class TransferImpl(
         scope.launch {
             announceCancelToPeer()
         }
+        markSettled()
         outcome.complete(TransferResult.Cancelled)
     }
 
@@ -117,12 +124,21 @@ internal class TransferImpl(
                 is kotlinx.coroutines.CancellationException -> return
                 else -> {
                     // Transport or protocol death is not a result value.
+                    markSettled()
                     outcome.completeExceptionally(e)
                     return
                 }
             }
         }
+        markSettled()
         outcome.complete(terminal)
+    }
+
+    /** Runs the one-shot end-of-transfer cleanup exactly once. */
+    private fun markSettled() {
+        if (settled.compareAndSet(false, true)) {
+            onSettled()
+        }
     }
 
     private suspend fun streamData() {

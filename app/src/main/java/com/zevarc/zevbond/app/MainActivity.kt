@@ -170,6 +170,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun watchSession(session: Session) {
+        // Any of the three streams ending means the session is gone;
+        // drop the CONNECTED state once, from whichever notices first.
+        val onSessionDown = {
+            if (connectedSession.value === session) {
+                connectedSession.value = null
+                appendLog("session ended: ${session.device.id.value}")
+            }
+        }
         uiScope().launch {
             runCatching {
                 session.messages().collect { message ->
@@ -179,6 +187,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }.onFailure { appendLog("message stream ended: ${it.message}") }
+            onSessionDown()
         }
         // Auto-responder: echo a ping request back as a success response.
         uiScope().launch {
@@ -193,6 +202,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }.onFailure { appendLog("request stream ended: ${it.message}") }
+            onSessionDown()
         }
         // Accept every offered transfer into a byte-counting destination.
         uiScope().launch {
@@ -218,6 +228,7 @@ class MainActivity : ComponentActivity() {
                     }.onFailure { appendLog("transfer failed: ${it.message}") }
                 }
             }.onFailure { appendLog("transfer stream ended: ${it.message}") }
+            onSessionDown()
         }
     }
 

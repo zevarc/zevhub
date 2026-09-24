@@ -8,6 +8,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -27,15 +28,20 @@ internal class IncomingTransferImpl(
     private val frameIds: FrameIdGenerator,
     private val scope: CoroutineScope,
     private val protocol: Protocol,
-    private val frames: Channel<TransferFrame>
+    private val frames: Channel<TransferFrame>,
+    private val onSettled: () -> Unit
 ) : IncomingTransfer {
 
     private val decided = AtomicBoolean(false)
+
+    /** Cancels the offer timeout once the peer's side decides. */
+    private var timeoutJob: Job? = null
 
     override fun accept(destination: TransferDestination): Transfer {
         check(decided.compareAndSet(false, true)) {
             "Transfer already accepted or rejected"
         }
+        timeoutJob?.cancel()
         return IncomingTransferJob(
             scope = scope,
             protocol = protocol,
@@ -43,7 +49,8 @@ internal class IncomingTransferImpl(
             contextId = contextId,
             totalBytes = totalBytes,
             destination = destination,
-            frames = frames
+            frames = frames,
+            onSettled = onSettled
         )
     }
 
@@ -51,6 +58,7 @@ internal class IncomingTransferImpl(
         check(decided.compareAndSet(false, true)) {
             "Transfer already accepted or rejected"
         }
+        timeoutJob?.cancel()
         // Tell the peer the offer is refused; the session pump drops any
         // in-flight DATA frames for contexts that nobody consumes.
         scope.launch {
@@ -62,6 +70,31 @@ internal class IncomingTransferImpl(
                         contextId = contextId
                     )
                 )
+            }
+            onSettled()
+        }
+    }
+
+    /**
+     * Rejects the offer if the application neither accepts nor rejects
+     * it, so a forgotten offer cannot stall the peer's transfer and tie
+     * up the session pump.
+     */
+    fun startOfferTimeout(timeoutMs: Long) {
+        timeoutJob = scope.launch {
+            delay(timeoutMs)
+            if (decided.compareAndSet(false, true)) {
+                frames.close()
+                onSettled()
+                runCatching {
+                    protocol.send(
+                        ProtocolFrame(
+                            kind = ProtocolKind.TRANSFER_CANCEL,
+                            frameId = frameIds.next(),
+                            contextId = contextId
+                        )
+                    )
+                }
             }
         }
     }
@@ -78,7 +111,8 @@ internal class IncomingTransferJob(
     private val contextId: Long,
     private val totalBytes: Long?,
     private val destination: TransferDestination,
-    private val frames: Channel<TransferFrame>
+    private val frames: Channel<TransferFrame>,
+    private val onSettled: () -> Unit
 ) : Transfer {
 
     private val progressFlow = MutableStateFlow(
@@ -86,6 +120,9 @@ internal class IncomingTransferJob(
     )
 
     private val outcome = CompletableDeferred<TransferResult>()
+
+    /** Guards the one-shot end-of-transfer cleanup. */
+    private val settled = AtomicBoolean(false)
 
     private val job = scope.launch {
         val result = runCatching {
@@ -120,6 +157,7 @@ internal class IncomingTransferJob(
             @Suppress("UNREACHABLE_CODE")
             throw IllegalStateException("unreachable")
         }
+        markSettled()
         result.fold(
             onSuccess = { outcome.complete(it) },
             onFailure = { outcome.completeExceptionally(it) }
@@ -131,7 +169,7 @@ internal class IncomingTransferJob(
     override suspend fun await(): TransferResult = outcome.await()
 
     override fun cancel() {
-        if (outcome.isCompleted) {
+        if (!settled.compareAndSet(false, true)) {
             return
         }
         scope.launch {
@@ -148,6 +186,14 @@ internal class IncomingTransferJob(
         job.cancel()
         scope.launch {
             runCatching { destination.close() }
+        }
+        outcome.complete(TransferResult.Cancelled)
+    }
+
+    /** Runs the one-shot end-of-transfer cleanup exactly once. */
+    private fun markSettled() {
+        if (settled.compareAndSet(false, true)) {
+            onSettled()
         }
     }
 }

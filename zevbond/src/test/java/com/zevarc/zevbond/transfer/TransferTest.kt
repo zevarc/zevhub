@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
@@ -390,5 +391,83 @@ class TransferTest {
         assertEquals(3, offersSeen.size)
         assertEquals(3, results.count { it is TransferResult.Success })
         collectJob.cancel()
+    }
+
+    @Test
+    fun `ignored offer times out and cancels the sender`() = runTest {
+        val (_, _, protocols) = pairWithTransports(backgroundScope)
+        val (clientProtocol, serverProtocol) = protocols
+        val clientSession = sessionFor(clientProtocol, backgroundScope)
+        val serverSession = sessionFor(serverProtocol, backgroundScope)
+
+        repeat(5) { yield() }
+
+        // A source that blocks after the first chunk, so the transfer is
+        // still in flight when the receiver's offer timeout fires.
+        val stalled = CompletableDeferred<Unit>()
+        val source = object : TransferSource {
+            override val metadata = TransferMetadata("forgotten")
+            override val totalBytes = null
+            private var first = true
+            override suspend fun read(maxBytes: Int): ByteArray? {
+                if (first) {
+                    first = false
+                    return ByteArray(1024)
+                }
+                stalled.await()
+                return null
+            }
+        }
+        val transfer = clientSession.transfer(source)
+
+        // Nobody collects the receiver's offers; the timeout must reject
+        // the offer so the sender is not left streaming into a void.
+        advanceTimeBy(30_001)
+        repeat(5) { yield() }
+
+        assertEquals(TransferResult.Cancelled, transfer.await())
+        stalled.complete(Unit)
+    }
+
+    @Test
+    fun `accepted offer keeps working after the timeout window passes`() = runTest {
+        val (_, _, protocols) = pairWithTransports(backgroundScope)
+        val (clientProtocol, serverProtocol) = protocols
+        val clientSession = sessionFor(clientProtocol, backgroundScope)
+        val serverSession = sessionFor(serverProtocol, backgroundScope)
+
+        repeat(5) { yield() }
+
+        val data = ByteArray(10_000) { (it % 251).toByte() }
+        // A source that waits for acceptance before producing, so the
+        // timeout window fully elapses while the offer sits undecided.
+        val accepted = CompletableDeferred<Unit>()
+        val source = object : TransferSource {
+            override val metadata = TransferMetadata("slowstart")
+            override val totalBytes = data.size.toLong()
+            private var first = true
+            override suspend fun read(maxBytes: Int): ByteArray? {
+                if (first) {
+                    first = false
+                    accepted.await()
+                    return data
+                }
+                return null
+            }
+        }
+        val transfer = clientSession.transfer(source)
+        val destination = ListDestination()
+        val acceptJob = async {
+            val offer = serverSession.transfers().first()
+            val received = offer.accept(destination)
+            accepted.complete(Unit)
+            received.await()
+        }
+
+        advanceTimeBy(30_001)
+        repeat(5) { yield() }
+        assertEquals(TransferResult.Success(data.size.toLong()), transfer.await())
+        assertEquals(TransferResult.Success(data.size.toLong()), acceptJob.await())
+        assertArrayEquals(data, destination.allBytes())
     }
 }
