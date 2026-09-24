@@ -12,6 +12,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * [ByteTransport] over a blocking TCP socket. Read and write loops run as
@@ -33,12 +34,15 @@ class TcpTransport(
     private val readJob: Job
     private val writeJob: Job
 
+    private val failure = AtomicReference<Throwable?>(null)
+
     init {
         readJob = scope.launch(Dispatchers.IO) { readLoop(socket.getInputStream()) }
         writeJob = scope.launch(Dispatchers.IO) { writeLoop(socket.getOutputStream()) }
     }
 
     override suspend fun send(data: ByteArray) {
+        failure.get()?.let { throw it }
         writeChannel.send(data)
     }
 
@@ -69,11 +73,7 @@ class TcpTransport(
             }
             incoming.close()
         } catch (e: Exception) {
-            if (closed.get()) {
-                incoming.cancel()
-            } else {
-                incoming.close(e)
-            }
+            fail(e)
         }
     }
 
@@ -84,8 +84,21 @@ class TcpTransport(
                 output.flush()
             }
         } catch (e: Exception) {
-            // Local close breaks the blocking write; the read loop surfaces
-            // the failure through the incoming flow.
+            if (!closed.get()) {
+                // A live write failure kills the whole path: fail the read
+                // side so the upper layers observe the transport going down.
+                socket.close()
+                fail(e)
+            }
+        }
+    }
+
+    private fun fail(e: Throwable) {
+        if (closed.get()) {
+            incoming.cancel()
+        } else {
+            failure.compareAndSet(null, e)
+            incoming.close(e)
         }
     }
 

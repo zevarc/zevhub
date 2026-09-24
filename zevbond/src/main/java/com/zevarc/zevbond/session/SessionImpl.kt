@@ -7,8 +7,9 @@ import com.zevarc.zevbond.protocol.FrameIdGenerator
 import com.zevarc.zevbond.protocol.Protocol
 import com.zevarc.zevbond.protocol.ProtocolFrame
 import com.zevarc.zevbond.protocol.ProtocolKind
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 
 internal class SessionImpl(
@@ -18,24 +19,24 @@ internal class SessionImpl(
     private val frameIds: FrameIdGenerator = FrameIdGenerator()
 ) : Session {
 
-    private val _messages = kotlinx.coroutines.flow.MutableSharedFlow<Message>(
-        extraBufferCapacity = 64
-    )
+    private val incoming = Channel<Message>(capacity = 64)
 
     private val pumpJob = scope.launch {
-        protocol.receive().collect { frame ->
-            when (frame.kind) {
-                ProtocolKind.MESSAGE ->
-                    _messages.emit(MessageCodec.decode(frame.payload))
-
-                else -> {
-                    // Unknown kinds are ignored until their consumers exist.
+        try {
+            protocol.receive().collect { frame ->
+                if (frame.kind == ProtocolKind.MESSAGE) {
+                    incoming.send(MessageCodec.decode(frame.payload))
                 }
             }
+            // The receive flow completing means the transport or protocol is
+            // gone; the session is dead either way.
+            incoming.close()
+        } catch (e: Exception) {
+            incoming.close(e)
         }
     }
 
-    override fun messages(): Flow<Message> = _messages
+    override fun messages(): Flow<Message> = incoming.receiveAsFlow()
 
     override suspend fun send(message: Message) {
         protocol.send(
@@ -49,6 +50,7 @@ internal class SessionImpl(
 
     override suspend fun close() {
         pumpJob.cancel()
+        incoming.close()
         protocol.close()
     }
 }

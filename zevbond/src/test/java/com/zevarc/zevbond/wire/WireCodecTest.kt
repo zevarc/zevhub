@@ -12,9 +12,20 @@ class WireCodecTest {
         version = WireConstants.VERSION,
         kind = ProtocolKind.MESSAGE.value,
         frameId = 0x0102030405060708L,
+        contextId = 0L,
+        correlationId = 0L,
+        sequence = 0,
+        payload = payload
+    )
+
+    /** TRANSFER_DATA carries context id and sequence per the header rules. */
+    private fun contextFrame(payload: ByteArray = ByteArray(0)) = WireFrame(
+        version = WireConstants.VERSION,
+        kind = ProtocolKind.TRANSFER_DATA.value,
+        frameId = 0x0102030405060708L,
         contextId = 0x1112131415161718L,
-        correlationId = 0x191A1B1C1D1E1F20L,
-        sequence = 0x21222324,
+        correlationId = 0L,
+        sequence = 1,
         payload = payload
     )
 
@@ -47,16 +58,16 @@ class WireCodecTest {
     @Test
     fun `round trip preserves all fields`() {
         val payload = byteArrayOf(1, 2, 3, 4, 5)
-        val bytes = WireCodec.encode(frame(payload))
+        val bytes = WireCodec.encode(contextFrame(payload))
 
         val decoded = WireDecoder().feed(bytes)
 
         assertEquals(1, decoded.size)
         val f = decoded[0]
-        assertEquals(ProtocolKind.MESSAGE.value, f.kind)
+        assertEquals(ProtocolKind.TRANSFER_DATA.value, f.kind)
         assertEquals(0x0102030405060708L, f.frameId)
         assertEquals(0x1112131415161718L, f.contextId)
-        assertEquals(0x21222324, f.sequence)
+        assertEquals(1, f.sequence)
         assertArrayEquals(payload, f.payload)
     }
 

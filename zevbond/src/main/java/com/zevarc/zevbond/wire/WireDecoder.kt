@@ -76,6 +76,8 @@ class WireDecoder {
             val correlationId = ids.long
             val sequence = ids.int
 
+            validateHeaderUsage(kind, frameId, contextId, correlationId, sequence)
+
             frames.add(
                 WireFrame(
                     version = version,
@@ -90,6 +92,64 @@ class WireDecoder {
 
             buffer = buffer.copyOfRange(totalSize, length)
             length -= totalSize
+        }
+    }
+
+    /**
+     * Header field constraints from the wire spec: correlation ids only on
+     * REQUEST/RESPONSE, context ids only on Transfer/Stream frames, non-zero
+     * frame ids everywhere, zero sequences everywhere except data frames.
+     */
+    private fun validateHeaderUsage(
+        kind: Byte,
+        frameId: Long,
+        contextId: Long,
+        correlationId: Long,
+        sequence: Int
+    ) {
+        if (frameId == 0L) {
+            throw WireException("Zero frame id", WireException.CODE_INVALID_FRAME)
+        }
+        val withCorrelation = kind == ProtocolKind.REQUEST.value ||
+            kind == ProtocolKind.RESPONSE.value
+        val withContext = kind == ProtocolKind.TRANSFER_START.value ||
+            kind == ProtocolKind.TRANSFER_DATA.value ||
+            kind == ProtocolKind.TRANSFER_COMPLETE.value ||
+            kind == ProtocolKind.TRANSFER_CANCEL.value ||
+            kind == ProtocolKind.STREAM_DATA.value ||
+            kind == ProtocolKind.STREAM_CLOSE.value
+        val withSequence = kind == ProtocolKind.TRANSFER_DATA.value ||
+            kind == ProtocolKind.STREAM_DATA.value
+        when {
+            withCorrelation && correlationId == 0L ->
+                throw WireException(
+                    "Missing correlation id on kind $kind",
+                    WireException.CODE_INVALID_CORRELATION
+                )
+
+            !withCorrelation && correlationId != 0L ->
+                throw WireException(
+                    "Unexpected correlation id on kind $kind",
+                    WireException.CODE_INVALID_CORRELATION
+                )
+
+            withContext && contextId == 0L ->
+                throw WireException(
+                    "Missing context id on kind $kind",
+                    WireException.CODE_INVALID_CONTEXT
+                )
+
+            !withContext && contextId != 0L ->
+                throw WireException(
+                    "Unexpected context id on kind $kind",
+                    WireException.CODE_INVALID_CONTEXT
+                )
+
+            !withSequence && sequence != 0 ->
+                throw WireException(
+                    "Unexpected sequence on kind $kind",
+                    WireException.CODE_INVALID_FRAME
+                )
         }
     }
 
