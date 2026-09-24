@@ -35,6 +35,9 @@ import com.zevarc.zevbond.app.ui.theme.ZevBondTheme
 import com.zevarc.zevbond.device.Device
 import com.zevarc.zevbond.message.Message
 import com.zevarc.zevbond.message.MessageType
+import com.zevarc.zevbond.request.Request
+import com.zevarc.zevbond.request.RequestType
+import com.zevarc.zevbond.request.Response
 import com.zevarc.zevbond.session.Session
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -101,7 +104,8 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }.onFailure { appendLog("send failed: ${it.message}") }
                             }
-                        }
+                        },
+                        onPing = ::sendPing
                     )
                 }
             }
@@ -155,13 +159,63 @@ class MainActivity : ComponentActivity() {
             instance.incomingSessions().collect { session ->
                 appendLog("incoming session: ${session.device.id.value}")
                 connectedSession.value = session
+                watchSession(session)
+            }
+        }
+    }
+
+    private fun watchSession(session: Session) {
+        uiScope().launch {
+            runCatching {
                 session.messages().collect { message ->
                     appendLog(
                         "recv [${message.type.value}] " +
                             String(message.data, Charsets.UTF_8)
                     )
                 }
+            }.onFailure { appendLog("message stream ended: ${it.message}") }
+        }
+        // Auto-responder: echo a ping request back as a success response.
+        uiScope().launch {
+            runCatching {
+                session.requests().collect { incoming ->
+                    if (incoming.type.value == "ping") {
+                        incoming.respond(Response.Success(incoming.data))
+                    } else {
+                        incoming.respond(
+                            Response.Failure(errorCode = 404, errorData = "unknown type".toByteArray())
+                        )
+                    }
+                }
+            }.onFailure { appendLog("request stream ended: ${it.message}") }
+        }
+    }
+
+    private fun sendPing() {
+        uiScope().launch {
+            val session = connectedSession.value
+            if (session == null) {
+                appendLog("ping failed: not connected")
+                return@launch
             }
+            val nonce = java.util.UUID.randomUUID()
+                .toString().substring(0, 8).toByteArray()
+            val started = System.nanoTime()
+            runCatching {
+                session.request(Request(RequestType("ping"), nonce))
+            }.onSuccess { response ->
+                val elapsed = (System.nanoTime() - started) / 1_000_000
+                when (response) {
+                    is Response.Success ->
+                        if (response.data.contentEquals(nonce)) {
+                            appendLog("ping ok in ${elapsed}ms")
+                        } else {
+                            appendLog("ping mismatch: nonce echoed incorrectly")
+                        }
+                    is Response.Failure ->
+                        appendLog("ping failed: code=${response.errorCode}")
+                }
+            }.onFailure { appendLog("ping failed: ${it.message}") }
         }
     }
 
@@ -198,7 +252,8 @@ fun DebugScreen(
     connected: Boolean,
     onDiscover: () -> Unit,
     onConnect: (Device) -> Unit,
-    onSend: (String) -> Unit
+    onSend: (String) -> Unit,
+    onPing: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
 
@@ -233,6 +288,9 @@ fun DebugScreen(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            Button(onClick = onPing, enabled = connected) {
+                Text("Ping")
+            }
             TextField(
                 value = input,
                 onValueChange = { input = it },
