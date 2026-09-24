@@ -39,6 +39,10 @@ import com.zevarc.zevbond.request.Request
 import com.zevarc.zevbond.request.RequestType
 import com.zevarc.zevbond.request.Response
 import com.zevarc.zevbond.session.Session
+import com.zevarc.zevbond.transfer.TransferDestination
+import com.zevarc.zevbond.transfer.TransferMetadata
+import com.zevarc.zevbond.transfer.TransferResult
+import com.zevarc.zevbond.transfer.TransferSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -105,7 +109,8 @@ class MainActivity : ComponentActivity() {
                                 }.onFailure { appendLog("send failed: ${it.message}") }
                             }
                         },
-                        onPing = ::sendPing
+                        onPing = ::sendPing,
+                        onTransfer = ::sendPayload
                     )
                 }
             }
@@ -189,6 +194,44 @@ class MainActivity : ComponentActivity() {
                 }
             }.onFailure { appendLog("request stream ended: ${it.message}") }
         }
+        // Accept every offered transfer into a byte-counting destination.
+        uiScope().launch {
+            runCatching {
+                session.transfers().collect { incoming ->
+                    appendLog(
+                        "transfer offer: ${incoming.metadata.type}" +
+                            " (${incoming.totalBytes ?: "unknown"} bytes)"
+                    )
+                    val started = System.nanoTime()
+                    val received = incoming.accept(CountingDestination { count ->
+                        appendLog("transfer progress: $count bytes")
+                    })
+                    runCatching {
+                        when (val result = received.await()) {
+                            is TransferResult.Success -> appendLog(
+                                "transfer done: ${result.bytesDelivered} bytes" +
+                                    " in ${(System.nanoTime() - started) / 1_000_000}ms"
+                            )
+                            is TransferResult.Cancelled ->
+                                appendLog("transfer cancelled")
+                        }
+                    }.onFailure { appendLog("transfer failed: ${it.message}") }
+                }
+            }.onFailure { appendLog("transfer stream ended: ${it.message}") }
+        }
+    }
+
+    /** Logs the running byte count at a coarse interval. */
+    private class CountingDestination(
+        private val onCount: (Long) -> Unit
+    ) : TransferDestination {
+        var count = 0L
+        override suspend fun write(data: ByteArray) {
+            count += data.size
+        }
+        override suspend fun close() {
+            onCount(count)
+        }
     }
 
     private fun sendPing() {
@@ -216,6 +259,41 @@ class MainActivity : ComponentActivity() {
                         appendLog("ping failed: code=${response.errorCode}")
                 }
             }.onFailure { appendLog("ping failed: ${it.message}") }
+        }
+    }
+
+    private fun sendPayload() {
+        uiScope().launch {
+            val session = connectedSession.value
+            if (session == null) {
+                appendLog("send failed: not connected")
+                return@launch
+            }
+            appendLog("generating 2 MiB payload...")
+            val data = ByteArray(2 * 1024 * 1024) { (it % 251).toByte() }
+            val started = System.nanoTime()
+            val source = object : TransferSource {
+                override val metadata = TransferMetadata("payload", "2mib".toByteArray())
+                override val totalBytes = data.size.toLong()
+                private var offset = 0
+                override suspend fun read(maxBytes: Int): ByteArray? {
+                    if (offset >= data.size) return null
+                    val end = minOf(offset + maxBytes, data.size)
+                    val chunk = data.copyOfRange(offset, end)
+                    offset = end
+                    return chunk
+                }
+            }
+            val transfer = session.transfer(source)
+            runCatching {
+                when (val result = transfer.await()) {
+                    is TransferResult.Success -> appendLog(
+                        "sent ${result.bytesDelivered} bytes" +
+                            " in ${(System.nanoTime() - started) / 1_000_000}ms"
+                    )
+                    is TransferResult.Cancelled -> appendLog("send cancelled")
+                }
+            }.onFailure { appendLog("send failed: ${it.message}") }
         }
     }
 
@@ -253,7 +331,8 @@ fun DebugScreen(
     onDiscover: () -> Unit,
     onConnect: (Device) -> Unit,
     onSend: (String) -> Unit,
-    onPing: () -> Unit
+    onPing: () -> Unit,
+    onTransfer: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
 
@@ -290,6 +369,9 @@ fun DebugScreen(
         ) {
             Button(onClick = onPing, enabled = connected) {
                 Text("Ping")
+            }
+            Button(onClick = onTransfer, enabled = connected) {
+                Text("2MiB")
             }
             TextField(
                 value = input,

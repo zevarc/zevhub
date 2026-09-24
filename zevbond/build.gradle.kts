@@ -33,3 +33,9 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }
+
+// Transfers up to 3 MiB are held in memory by the unit test fixtures;
+// the default 512m heap is not enough.
+tasks.withType<Test>().configureEach {
+    maxHeapSize = "2g"
+}

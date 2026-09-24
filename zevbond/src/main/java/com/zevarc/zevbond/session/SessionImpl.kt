@@ -14,6 +14,14 @@ import com.zevarc.zevbond.request.Request
 import com.zevarc.zevbond.request.RequestCodec
 import com.zevarc.zevbond.request.Response
 import com.zevarc.zevbond.request.ResponseCodec
+import com.zevarc.zevbond.transfer.IncomingTransfer
+import com.zevarc.zevbond.transfer.IncomingTransferImpl
+import com.zevarc.zevbond.transfer.Transfer
+import com.zevarc.zevbond.transfer.TransferCodec
+import com.zevarc.zevbond.transfer.TransferDestination
+import com.zevarc.zevbond.transfer.TransferFrame
+import com.zevarc.zevbond.transfer.TransferImpl
+import com.zevarc.zevbond.transfer.TransferSource
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -34,6 +42,13 @@ internal class SessionImpl(
     private val incomingRequests = Channel<IncomingRequest>(
         capacity = 64
     )
+
+    private val incomingTransfers = Channel<IncomingTransfer>(
+        capacity = 64
+    )
+
+    /** Open transfer contexts routed by the pump, keyed by context id. */
+    private val transferContexts = ConcurrentHashMap<Long, Channel<TransferFrame>>()
 
     /** In-flight requests keyed by correlation id. */
     private val pendingRequests =
@@ -74,6 +89,38 @@ internal class SessionImpl(
                         }
                     }
 
+                    ProtocolKind.TRANSFER_START -> {
+                        val (metadata, totalBytes) = TransferCodec.decodeStart(frame.payload)
+                        val frames = Channel<TransferFrame>(capacity = 64)
+                        transferContexts[frame.contextId] = frames
+                        incomingTransfers.send(
+                            IncomingTransferImpl(
+                                metadata = metadata,
+                                totalBytes = totalBytes,
+                                contextId = frame.contextId,
+                                scope = scope,
+                                protocol = protocol,
+                                frameIds = frameIds,
+                                frames = frames
+                            )
+                        )
+                    }
+
+                    ProtocolKind.TRANSFER_DATA,
+                    ProtocolKind.TRANSFER_COMPLETE,
+                    ProtocolKind.TRANSFER_CANCEL -> {
+                        val channel = transferContexts[frame.contextId]
+                        if (channel != null) {
+                            channel.send(TransferFrame(frame.kind, frame.payload))
+                            if (frame.kind != ProtocolKind.TRANSFER_DATA) {
+                                // The context is settled; stop routing.
+                                transferContexts.remove(frame.contextId)
+                            }
+                        }
+                        // Frames for unknown or already-settled contexts
+                        // belong to a cancelled transfer; drop them.
+                    }
+
                     else -> Unit
                 }
             }
@@ -81,6 +128,8 @@ internal class SessionImpl(
             // gone; the session is dead either way.
             incoming.close()
             incomingRequests.close()
+            incomingTransfers.close(IllegalStateException("Session closed"))
+            closeTransferContexts(IllegalStateException("Session closed"))
             failPendingRequests(IllegalStateException("Session closed"))
         } catch (e: Exception) {
             // The frame was valid on the wire but its payload broke the
@@ -92,6 +141,8 @@ internal class SessionImpl(
             }
             incoming.close(e)
             incomingRequests.close(e)
+            incomingTransfers.close(e)
+            closeTransferContexts(e)
             failPendingRequests(e)
         }
     }
@@ -100,6 +151,9 @@ internal class SessionImpl(
 
     override fun requests(): Flow<IncomingRequest> =
         incomingRequests.receiveAsFlow()
+
+    override fun transfers(): Flow<IncomingTransfer> =
+        incomingTransfers.receiveAsFlow()
 
     override suspend fun send(message: Message) {
         protocol.send(
@@ -142,11 +196,31 @@ internal class SessionImpl(
         }
     }
 
+    override fun transfer(source: TransferSource): Transfer {
+        val frames = Channel<com.zevarc.zevbond.transfer.TransferFrame>(capacity = 64)
+        val transfer = TransferImpl(
+            scope = scope,
+            protocol = protocol,
+            frameIds = frameIds,
+            frames = frames,
+            source = source
+        )
+        transferContexts[transfer.contextId] = frames
+        return transfer
+    }
+
     override suspend fun close() {
         pumpJob.cancel()
         incoming.close()
         incomingRequests.close()
+        incomingTransfers.close(IllegalStateException("Session closed"))
+        closeTransferContexts(IllegalStateException("Session closed"))
         protocol.close()
+    }
+
+    private fun closeTransferContexts(cause: Throwable) {
+        transferContexts.values.forEach { it.close(cause) }
+        transferContexts.clear()
     }
 
     private fun failPendingRequests(cause: Throwable) {

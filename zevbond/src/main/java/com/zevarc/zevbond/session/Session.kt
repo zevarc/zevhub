@@ -5,6 +5,9 @@ import com.zevarc.zevbond.message.Message
 import com.zevarc.zevbond.request.IncomingRequest
 import com.zevarc.zevbond.request.Request
 import com.zevarc.zevbond.request.Response
+import com.zevarc.zevbond.transfer.IncomingTransfer
+import com.zevarc.zevbond.transfer.Transfer
+import com.zevarc.zevbond.transfer.TransferSource
 import kotlinx.coroutines.flow.Flow
 
 interface Session {
@@ -36,6 +39,22 @@ interface Session {
      * be collected for the peer's requests to be processed.
      */
     fun requests(): Flow<com.zevarc.zevbond.request.IncomingRequest>
+
+    /**
+     * Starts sending the data of [source] to the peer and returns the
+     * handle to observe it. The transfer runs only after the peer
+     * accepts the offer surfaced through [transfers].
+     */
+    fun transfer(source: TransferSource): Transfer
+
+    /**
+     * Streams transfers offered by the peer. Each offer is delivered
+     * exactly once, to the active collector; uncollected offers wait in
+     * a bounded queue, and rejecting or ignoring an offer cancels the
+     * peer's transfer. Answer each one through
+     * [IncomingTransfer.accept] or [IncomingTransfer.reject].
+     */
+    fun transfers(): Flow<IncomingTransfer>
 
     suspend fun close()
 
