@@ -15,4 +15,10 @@ internal interface Protocol {
     fun receive(): Flow<ProtocolFrame>
 
     suspend fun close()
+
+    /**
+     * Reports a fatal protocol violation detected above the framing layer.
+     * Sends ERROR to the peer when possible, then closes the protocol.
+     */
+    suspend fun signalProtocolError(offendingFrameId: Long, cause: Exception)
 }

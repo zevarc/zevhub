@@ -53,7 +53,7 @@ internal class ProtocolImpl(
             }
             incoming.close()
         } catch (e: Exception) {
-            protocolError(e)
+            protocolError(0L, e)
         }
     }
 
@@ -105,11 +105,15 @@ internal class ProtocolImpl(
         }
     }
 
+    override suspend fun signalProtocolError(offendingFrameId: Long, cause: Exception) {
+        protocolError(offendingFrameId, cause)
+    }
+
     /**
      * A decode, validation, or peer ERROR frame is fatal: report ERROR to
      * the peer when possible, then tear the protocol down.
      */
-    private suspend fun protocolError(cause: Exception) {
+    private suspend fun protocolError(offendingFrameId: Long, cause: Exception) {
         // Echoing a peer's ERROR back would be a loop; only announce errors
         // that originated locally.
         val peerSignalled = cause is PeerErrorException
@@ -121,7 +125,7 @@ internal class ProtocolImpl(
                     ProtocolFrame(
                         kind = ProtocolKind.ERROR,
                         frameId = frameIds.next(),
-                        payload = errorPayload(errorCode)
+                        payload = errorPayload(errorCode, offendingFrameId)
                     )
                 )
             }
@@ -154,9 +158,11 @@ internal class ProtocolImpl(
         }
     }
 
-    private fun errorPayload(errorCode: Int): ByteArray {
+    private fun errorPayload(errorCode: Int, offendingFrameId: Long): ByteArray {
         val payload = ByteArray(10)
-        // Offending frame id is not tracked on decode failures; 0 means none.
+        for (i in 0 until 8) {
+            payload[i] = (offendingFrameId shr ((7 - i) * 8)).toByte()
+        }
         payload[8] = (errorCode shr 8).toByte()
         payload[9] = errorCode.toByte()
         return payload
