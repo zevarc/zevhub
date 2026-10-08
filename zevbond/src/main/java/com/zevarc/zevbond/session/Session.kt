@@ -5,6 +5,10 @@ import com.zevarc.zevbond.message.Message
 import com.zevarc.zevbond.request.IncomingRequest
 import com.zevarc.zevbond.request.Request
 import com.zevarc.zevbond.request.Response
+import com.zevarc.zevbond.stream.IncomingStream
+import com.zevarc.zevbond.stream.Stream
+import com.zevarc.zevbond.stream.StreamRejectedException
+import com.zevarc.zevbond.stream.StreamType
 import com.zevarc.zevbond.transfer.IncomingTransfer
 import com.zevarc.zevbond.transfer.Transfer
 import com.zevarc.zevbond.transfer.TransferSource
@@ -55,6 +59,25 @@ interface Session {
      * [IncomingTransfer.accept] or [IncomingTransfer.reject].
      */
     fun transfers(): Flow<IncomingTransfer>
+
+    /**
+     * Offers a stream of [type] to the peer and suspends until the peer
+     * accepts or refuses it. Returns the sending/receiving side on
+     * acceptance; throws [StreamRejectedException] when the peer
+     * refuses or does not answer in time.
+     *
+     * The peer sees the offer through [streams] and decides with
+     * [IncomingStream.accept] or [IncomingStream.reject].
+     */
+    suspend fun openStream(type: StreamType): Stream
+
+    /**
+     * Streams stream offers made by the peer. Each offer is delivered
+     * exactly once, to the active collector; ignoring an offer
+     * eventually refuses it on the peer side. Decide each one through
+     * [IncomingStream.accept] or [IncomingStream.reject].
+     */
+    fun streams(): Flow<IncomingStream>
 
     suspend fun close()
 

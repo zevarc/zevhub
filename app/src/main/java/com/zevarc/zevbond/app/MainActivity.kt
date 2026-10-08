@@ -110,7 +110,8 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onPing = ::sendPing,
-                        onTransfer = ::sendPayload
+                        onTransfer = ::sendPayload,
+                        onStream = ::sendStreamBurst
                     )
                 }
             }
@@ -230,6 +231,53 @@ class MainActivity : ComponentActivity() {
             }.onFailure { appendLog("transfer stream ended: ${it.message}") }
             onSessionDown()
         }
+        // Accept every offered stream and log its frames until close.
+        uiScope().launch {
+            runCatching {
+                session.streams().collect { offer ->
+                    appendLog("stream offer: ${offer.type.value}")
+                    val stream = offer.accept()
+                    launch {
+                        runCatching {
+                            var frames = 0
+                            var bytes = 0L
+                            stream.receive().collect { frame ->
+                                frames++
+                                bytes += frame.size
+                            }
+                            appendLog("stream done: $frames frames, $bytes bytes")
+                        }.onFailure { appendLog("stream failed: ${it.message}") }
+                    }
+                }
+            }.onFailure { appendLog("stream offer flow ended: ${it.message}") }
+            onSessionDown()
+        }
+    }
+
+    /** Opens a stream, sends 100 numbered frames, and closes it. */
+    private fun sendStreamBurst() {
+        uiScope().launch {
+            val session = connectedSession.value
+            if (session == null) {
+                appendLog("stream failed: not connected")
+                return@launch
+            }
+            runCatching {
+                val stream = session.openStream(
+                    com.zevarc.zevbond.stream.StreamType("burst")
+                )
+                appendLog("stream opened: ${stream.type.value}")
+                val started = System.nanoTime()
+                repeat(100) { index ->
+                    stream.send("frame-$index".toByteArray())
+                }
+                stream.close()
+                appendLog(
+                    "stream sent: 100 frames in" +
+                        " ${(System.nanoTime() - started) / 1_000_000}ms"
+                )
+            }.onFailure { appendLog("stream failed: ${it.message}") }
+        }
     }
 
     /** Logs the running byte count at a coarse interval. */
@@ -343,7 +391,8 @@ fun DebugScreen(
     onConnect: (Device) -> Unit,
     onSend: (String) -> Unit,
     onPing: () -> Unit,
-    onTransfer: () -> Unit
+    onTransfer: () -> Unit,
+    onStream: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
 
@@ -383,6 +432,9 @@ fun DebugScreen(
             }
             Button(onClick = onTransfer, enabled = connected) {
                 Text("2MiB")
+            }
+            Button(onClick = onStream, enabled = connected) {
+                Text("Stream")
             }
             TextField(
                 value = input,

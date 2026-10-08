@@ -19,8 +19,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@kotlinx.coroutines.ExperimentalCoroutinesApi
 class TransferTest {
-
     private fun pairWithTransports(
         scope: kotlinx.coroutines.CoroutineScope
     ): Triple<InMemoryTransport, InMemoryTransport, Pair<ProtocolImpl, ProtocolImpl>> {
