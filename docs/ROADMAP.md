@@ -1,7 +1,7 @@
 # ZevHub 技术路线与欠账清单
 
 > 设计目标：**不依赖底层链路**，为上层提供文字、图片、流等格式的传输。
-> 当前版本：SDK 未发版；协议 `version = 1`（冻结）；96 个单测全绿。
+> 当前版本：**v0.1.0 已发布**（JitPack）；协议 `version = 1`（冻结）；103 个单测全绿。
 
 这份文档只记两件事：**已经有什么**、**已知的窟窿**。不写"未来要做的功能"，那些属于需求池。
 
@@ -39,7 +39,7 @@ ZevHub         发现 / 连接 / 会话 / 重连              ✅ 完成（重�
         WifiP2pLink + TcpLink  组网 + TCP             ✅ 完成
 ```
 
-已冻结的线格式共 15 个 kind，其中 `HEARTBEAT(0x72)` 是后加的。因为 SDK 未发版、没有兼容面，所以可以加；发版后新增 kind 必须升 `version`。
+已冻结的线格式共 15 个 kind，其中 `HEARTBEAT(0x72)` 是在 v0.1.0 之前加的。**v0.1.0 起有兼容面了**：之后新增或改动任何 kind 都是破坏性变更，必须升 `version` 并做多版本共存。
 
 ---
 
@@ -179,43 +179,47 @@ require(hello.version == HandshakeCodec.PROTOCOL_VERSION)
 
 将来升到 2 时，"一台设备升了 App、一台没升"必须能优雅降级或明确报错。**多版本共存要在写 v2 之前想清楚**，不能等。
 
-### 3.4 发布与消费（AAR 已就绪）
+### 3.4 发布与消费（已发版 v0.1.0）
 
-SDK 以 AAR 形式被上层 App 消费，坐标 `com.zevarc:zevhub:0.1.0`（版本在 `gradle.properties` 的 `zevhub.version`）。
-
-```bash
-# SDK 仓库
-./gradlew :zevhub:publishToMavenLocal          # -> ~/.m2/repository
-./gradlew :zevhub:testDebugUnitTest            # 103 个测试
-
-# 消费方（FastAir）
-./gradlew :app:compileDebugKotlin
-```
-
-消费方只需两处改动：
+SDK 以 AAR 形式被上层 App 消费。已发布 tag `v0.1.0`，JitPack 自动构建。
 
 ```kotlin
 // settings.gradle.kts
 dependencyResolutionManagement {
-    repositories { google(); mavenCentral(); mavenLocal() }
+    repositories { google(); mavenCentral(); maven { url = uri("https://jitpack.io") } }
 }
 
 // app/build.gradle.kts
-implementation("com.zevarc:zevhub:0.1.0")
+implementation("com.github.zevarc:zevhub:v0.1.0")
 ```
 
-**为什么选 `mavenLocal()` 而不是 JitPack / GitHub Packages：** 内置、免 token、无网络依赖，改 SDK 后一条命令即可让 App 用上。代价是每台开发机要各跑一次 `publishToMavenLocal`，且**没有版本不可变性**——同名版本会被覆盖。
+**坐标不是 JitPack 文档里的常见形式。** 文档通常写 `com.github.<user>.<repo>:<repo>:<tag>`，但本项目的 `:zevhub` 声明了自己的 `group = com.zevarc`，JitPack 尊重发布者的 group，实际路径落在 `com/github/zevarc/zevhub/v0.1.0/`，因此坐标是 `com.github.zevarc:zevhub`。写错的表现是依赖树里该模块 `FAILED`，而 `curl` 打 JitPack 路径却返回 200。
 
-**已验证**：FastAir 仅靠 AAR（`zevhub` 源码模块不参与构建）就能编译通过，`ZevHub`/`Session`/`Transfer*`/`Message` 全套公开 API 可用。
+**如何确认可用**：删掉本地 `~/.m2/repository/com/zevarc` 后仍能构建，才算真的脱离本机。
 
-**切到远端仓库时需要补的：**
+```bash
+./gradlew clean :app:assembleDebug   # 消费方，本地无任何 ZevHub 产物
+```
+
+**发版流程**：
+
+```bash
+./gradlew :zevhub:testDebugUnitTest   # 103 个测试
+git tag -a v0.1.1 -m "..."            # 新版本必须换 tag
+git push origin v0.1.1                # JitPack 自动构建
+```
+
+改 `gradle.properties` 的 `zevhub.version` 只影响 `publishToMavenLocal` 与本地产物，**不影响 JitPack**——JitPack 用 tag 名作为版本。
+
+**已回退的尝试**：先用 `mavenLocal()` 打通链路（本机可用、免 token、改完立刻生效），但它只在本机有效，换机器或新 clone 就构建不了。已切 JitPack。
+
+**仍然缺的：**
 
 | 项 | 原因 |
 |---|---|
-| 远端 `maven { url = ... }` + 凭据 | `mavenLocal` 只在本机有效 |
-| AAR 签名（`signing`） | Maven Central 强制；企业内仓库通常也要求 |
-| 不可变版本号策略 | 本地方案同名版本可被覆盖，远端不行 |
-| `binary-compatibility-validator` | 发版后改公开 API 会静默破坏消费方 |
+| AAR 签名（`signing`） | Maven Central 强制；企业内仓库通常也要求。JitPack 不需要 |
+| `binary-compatibility-validator` | 已发版，改公开 API 现在会**静默破坏** FastAir 等消费方 |
+| 远端默认分支 | 远程目前只有 `dev`，GitHub 默认分支仍是初始的 `main`（空），需在网页上改 |
 
 ---
 
