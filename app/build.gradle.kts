@@ -4,13 +4,13 @@ plugins {
 }
 
 android {
-    namespace = "com.zevarc.zevbond.app"
+    namespace = "com.zevarc.zevhub.app"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.zevarc.zevbond.app"
+        applicationId = "com.zevarc.zevhub.app"
         minSdk = 24
         targetSdk = 37
         versionCode = 1
@@ -27,11 +27,19 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures {
         compose = true
+    }
+}
+
+// Keep the Kotlin bytecode target in step with compileOptions above. Without
+// this the two defaults can drift apart silently.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -52,5 +60,5 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    implementation(project(":zevbond"))
+    implementation(project(":zevhub"))
 }

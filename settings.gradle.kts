@@ -22,6 +22,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ZevBond"
+rootProject.name = "ZevHub"
 include(":app")
-include(":zevbond")
+include(":zevhub")
