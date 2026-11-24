@@ -45,6 +45,19 @@ internal class TransferImpl(
 
     private var nextSequence = 0
 
+    /**
+     * Bytes already published to [progressFlow].
+     *
+     * Publishing per chunk costs a CAS plus a collector wake-up per frame, which
+     * for 256 KiB chunks is thousands of times per transfer. Progress is a
+     * human-facing signal, so it is throttled by distance instead: see
+     * [PROGRESS_STEP_BYTES].
+     */
+    private var publishedBytes = 0L
+
+    /** Running total of successfully handed-off bytes. */
+    private var sentBytes = 0L
+
     private val senderJob = scope.launch {
         val result = runCatching {
             protocol.send(
@@ -63,7 +76,8 @@ internal class TransferImpl(
                     contextId = contextId
                 )
             )
-            TransferResult.Success(progressFlow.value.bytesTransferred)
+            publishFinalProgress()
+            TransferResult.Success(sentBytes)
         }
         settle(result)
     }
@@ -156,6 +170,14 @@ internal class TransferImpl(
         }
     }
 
+    /** Publishes the exact total once, whatever the throttle did. */
+    private fun publishFinalProgress() {
+        if (publishedBytes != sentBytes) {
+            publishedBytes = sentBytes
+            progressFlow.value = TransferProgress(sentBytes, source.totalBytes)
+        }
+    }
+
     private suspend fun streamData() {
         while (true) {
             if (cancelRequested.isCompleted) {
@@ -171,10 +193,11 @@ internal class TransferImpl(
                     payload = chunk
                 )
             )
-            progressFlow.value = TransferProgress(
-                bytesTransferred = progressFlow.value.bytesTransferred + chunk.size,
-                totalBytes = source.totalBytes
-            )
+            sentBytes += chunk.size
+            if (sentBytes - publishedBytes >= PROGRESS_STEP_BYTES) {
+                publishedBytes = sentBytes
+                progressFlow.value = TransferProgress(sentBytes, source.totalBytes)
+            }
         }
     }
 
@@ -192,5 +215,12 @@ internal class TransferImpl(
 
     companion object {
         const val DEFAULT_CHUNK_SIZE = 256 * 1024
+
+        /**
+         * Minimum byte distance between progress emissions. 256 KiB keeps a
+         * multi-gigabyte transfer to a few thousand updates while still
+         * animating smoothly for a human.
+         */
+        const val PROGRESS_STEP_BYTES = 256L * 1024L
     }
 }

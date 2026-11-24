@@ -124,6 +124,12 @@ internal class IncomingTransferJob(
     /** Guards the one-shot end-of-transfer cleanup. */
     private val settled = AtomicBoolean(false)
 
+    /** Running total, kept off the StateFlow so a chunk needs no CAS. */
+    private var receivedBytes = 0L
+
+    /** Last value published to [progressFlow]; throttles the emissions. */
+    private var publishedBytes = 0L
+
     private val job = scope.launch {
         val result = runCatching {
             while (true) {
@@ -132,15 +138,19 @@ internal class IncomingTransferJob(
                 when (frame.kind) {
                     ProtocolKind.TRANSFER_DATA -> {
                         destination.write(frame.payload)
-                        progressFlow.value = TransferProgress(
-                            bytesTransferred = progressFlow.value.bytesTransferred +
-                                frame.payload.size,
-                            totalBytes = totalBytes
-                        )
+                        receivedBytes += frame.payload.size
+                        // Progress is a human-facing signal; a CAS plus a
+                        // collector wake-up per 256 KiB chunk is measurable.
+                        if (receivedBytes - publishedBytes >= PROGRESS_STEP_BYTES) {
+                            publishedBytes = receivedBytes
+                            progressFlow.value = TransferProgress(receivedBytes, totalBytes)
+                        }
                     }
 
                     ProtocolKind.TRANSFER_COMPLETE -> {
-                        val received = progressFlow.value.bytesTransferred
+                        val received = receivedBytes
+                        publishedBytes = receivedBytes
+                        progressFlow.value = TransferProgress(receivedBytes, totalBytes)
                         destination.close()
                         // A peer that announced a size must deliver it. Reporting
                         // Success otherwise hands the caller a silently truncated
@@ -205,6 +215,11 @@ internal class IncomingTransferJob(
         }
     }
 }
+
+/**
+ * Minimum byte distance between progress emissions, matching the sending side.
+ */
+private const val PROGRESS_STEP_BYTES = 256L * 1024L
 
 /** One routed TRANSFER_* frame belonging to a single transfer context. */
 internal class TransferFrame(

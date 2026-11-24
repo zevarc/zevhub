@@ -661,4 +661,55 @@ class TransferTest {
         assertEquals(TransferResult.Cancelled, source.lastResult)
         parked.complete(Unit)
     }
+
+    @Test
+    fun `a large transfer does not emit progress for every chunk`() = runTest {
+        val (_, _, protocols) = pairWithTransports(backgroundScope)
+        val clientSession = sessionFor(protocols.first, backgroundScope)
+        val serverSession = sessionFor(protocols.second, backgroundScope)
+        repeat(5) { yield() }
+
+        // 4 MiB in 256 KiB chunks is 16 frames; throttling at 256 KiB means a
+        // handful of emissions, not one per frame.
+        val data = ByteArray(4 * 1024 * 1024) { (it % 251).toByte() }
+        val transfer = clientSession.transfer(
+            ByteSource(TransferMetadata("bulk"), data.size.toLong(), data, 256 * 1024)
+        )
+        serverSession.transfers().first().accept(ListDestination())
+
+        // Subscribe before the transfer starts so live snapshots are counted.
+        var emissions = 0
+        val progressJob = launch { transfer.progress.collect { emissions++ } }
+        repeat(5) { yield() }
+
+        assertEquals(TransferResult.Success(data.size.toLong()), transfer.await())
+        repeat(5) { yield() }
+        progressJob.cancel()
+
+        assertTrue(
+            "expected few progress emissions for 4 MiB, got $emissions",
+            emissions <= 6
+        )
+        // The final value must still be exact, whatever the throttle skipped.
+        assertEquals(data.size.toLong(), transfer.progress.first().bytesTransferred)
+    }
+
+    @Test
+    fun `progress still reaches the exact total when the payload is tiny`() = runTest {
+        val (_, _, protocols) = pairWithTransports(backgroundScope)
+        val clientSession = sessionFor(protocols.first, backgroundScope)
+        val serverSession = sessionFor(protocols.second, backgroundScope)
+        repeat(5) { yield() }
+
+        // 100 bytes never crosses the throttle step, so only the final publish
+        // can report it.
+        val data = ByteArray(100) { 5 }
+        val transfer = clientSession.transfer(
+            ByteSource(TransferMetadata("tiny"), data.size.toLong(), data, 100)
+        )
+        serverSession.transfers().first().accept(ListDestination())
+
+        assertEquals(TransferResult.Success(100L), transfer.await())
+        assertEquals(100L, transfer.progress.first().bytesTransferred)
+    }
 }

@@ -87,8 +87,14 @@ internal class TcpTransport(
                 // cancellation is checked explicitly at a frame boundary.
                 currentCoroutineContext().ensureActive()
                 output.write(data)
-                output.flush()
+                // Flush only when nothing else is queued. Flushing per frame
+                // forces one syscall per frame and defeats the socket's own
+                // batching, which measured as the dominant cost of a transfer.
+                if (writeChannel.isEmpty) {
+                    output.flush()
+                }
             }
+            output.flush()
         } catch (e: Exception) {
             if (!closed.get()) {
                 // A live write failure kills the whole path: fail the read
