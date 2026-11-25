@@ -117,7 +117,12 @@ internal class SessionImpl(
 
                     ProtocolKind.TRANSFER_START -> {
                         val (metadata, totalBytes) = TransferCodec.decodeStart(frame.payload)
-                        val frames = Channel<TransferFrame>(capacity = 64)
+                        // Four frames, not sixty four. Each one carries a whole
+                        // chunk, so a per-frame count is a memory size in
+                        // disguise: at 512 KiB this queue would otherwise be able
+                        // to hold 32 MiB of received data waiting for a consumer
+                        // that may be slower than the sender.
+                        val frames = Channel<TransferFrame>(capacity = 4)
                         val contextId = frame.contextId
                         transferContexts[contextId] = frames
                         val offer = IncomingTransferImpl(
@@ -279,7 +284,7 @@ internal class SessionImpl(
     }
 
     override fun transfer(source: TransferSource): Transfer {
-        val frames = Channel<com.zevarc.zevhub.transfer.TransferFrame>(capacity = 64)
+        val frames = Channel<com.zevarc.zevhub.transfer.TransferFrame>(capacity = 4)
         val contextId = frameIds.next()
         val transfer = TransferImpl(
             scope = scope,

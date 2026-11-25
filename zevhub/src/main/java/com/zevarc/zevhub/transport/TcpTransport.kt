@@ -33,10 +33,10 @@ internal class TcpTransport(
      * Outbound queue.
      *
      * Kept shallow on purpose. Each element is a whole encoded frame, so a deep
-     * queue holds megabytes of live arrays and hands the collector steady work for
-     * no throughput gain: the socket is the slow end, and backpressure reaching the
-     * producer is what keeps memory flat. Two is enough to keep the writer busy
-     * across a scheduling hop.
+     * queue holds megabytes of live arrays and gives the collector steady work for
+     * no throughput gain: the socket is the slow end, and letting backpressure
+     * reach the producer is what keeps memory flat. Two frames cover a scheduling
+     * hop without buffering a megabyte for no reason.
      */
     private val writeChannel = Channel<ByteArray>(capacity = 2)
 
