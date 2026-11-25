@@ -214,27 +214,7 @@ internal class TransferImpl(
     }
 
     companion object {
-        /**
-         * Bytes handed to the wire per frame.
-         *
-         * 1 MiB. Chosen from device measurements, which disagreed with the
-         * loopback ones in a useful way: on real Wi-Fi Direct hardware, moving
-         * from 64 KiB to 1 MiB took one phone from 3.0 to 11.2 MB/s, while a
-         * tablet that was link-limited stayed flat at 6-7. So the per-frame cost
-         * is what the sender can control, and it dominates on the faster device.
-         *
-         * Loopback medians over 32 MiB: 16K 1032, 64K 1455, 256K 1778,
-         * 512K 2286, 1M 2286 MB/s. Same conclusion, weaker signal.
-         *
-         * Capped just below the 1 MiB frame limit rather than at it: the payload
-         * length prefix is checked against MAX_FRAME_PAYLOAD on the receiving
-         * side, so a chunk that equals the cap leaves no room for metadata or for
-         * a future field and starts rejecting frames instead of sending them.
-         *
-         * Costs, accepted deliberately: with four receive slots this holds about
-         * 3.9 MiB awaiting a consumer, plus one encode copy in flight.
-         */
-        const val DEFAULT_CHUNK_SIZE = 1008 * 1024
+        const val DEFAULT_CHUNK_SIZE = 256 * 1024
 
         /**
          * Minimum byte distance between progress emissions. 256 KiB keeps a

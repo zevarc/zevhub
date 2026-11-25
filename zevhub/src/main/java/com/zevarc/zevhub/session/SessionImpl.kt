@@ -117,11 +117,7 @@ internal class SessionImpl(
 
                     ProtocolKind.TRANSFER_START -> {
                         val (metadata, totalBytes) = TransferCodec.decodeStart(frame.payload)
-                        // Deep enough to absorb a round trip's worth of data while
-                        // the consumer is busy writing the previous chunk. Too
-                        // shallow and the sender stalls waiting for a slot on
-                        // every window.
-                        val frames = Channel<TransferFrame>(capacity = 16)
+                        val frames = Channel<TransferFrame>(capacity = 64)
                         val contextId = frame.contextId
                         transferContexts[contextId] = frames
                         val offer = IncomingTransferImpl(
@@ -283,7 +279,7 @@ internal class SessionImpl(
     }
 
     override fun transfer(source: TransferSource): Transfer {
-        val frames = Channel<com.zevarc.zevhub.transfer.TransferFrame>(capacity = 16)
+        val frames = Channel<com.zevarc.zevhub.transfer.TransferFrame>(capacity = 64)
         val contextId = frameIds.next()
         val transfer = TransferImpl(
             scope = scope,
