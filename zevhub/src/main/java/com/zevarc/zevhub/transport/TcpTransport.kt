@@ -32,13 +32,13 @@ internal class TcpTransport(
     /**
      * Outbound queue.
      *
-     * Kept shallow on purpose. Each element is a whole encoded frame, so a deep
-     * queue holds megabytes of live arrays and gives the collector steady work for
-     * no throughput gain: the socket is the slow end, and letting backpressure
-     * reach the producer is what keeps memory flat. Two frames cover a scheduling
-     * hop without buffering a megabyte for no reason.
+     * Sized to keep the socket fed across a Wi-Fi Direct round trip. The link's
+     * latency is tens of milliseconds, so the bandwidth-delay product is
+     * megabytes; a shallow queue starves it and the transfer runs at a fraction
+     * of the link's capacity. Shrinking this to two frames measured slower, not
+     * leaner.
      */
-    private val writeChannel = Channel<ByteArray>(capacity = 2)
+    private val writeChannel = Channel<ByteArray>(capacity = 16)
 
     private val incoming = Channel<ByteArray>(capacity = 64)
 
