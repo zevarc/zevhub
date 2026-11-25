@@ -217,19 +217,24 @@ internal class TransferImpl(
         /**
          * Bytes handed to the wire per frame.
          *
-         * 512 KiB. Measured on loopback over 32 MiB transfers, five samples each,
-         * median throughput:
+         * 1 MiB. Chosen from device measurements, which disagreed with the
+         * loopback ones in a useful way: on real Wi-Fi Direct hardware, moving
+         * from 64 KiB to 1 MiB took one phone from 3.0 to 11.2 MB/s, while a
+         * tablet that was link-limited stayed flat at 6-7. So the per-frame cost
+         * is what the sender can control, and it dominates on the faster device.
          *
-         *   16K  1032 MB/s     256K  1778 MB/s
-         *   64K  1455 MB/s     512K  2286 MB/s
-         *                     1024K  2286 MB/s
+         * Loopback medians over 32 MiB: 16K 1032, 64K 1455, 256K 1778,
+         * 512K 2286, 1M 2286 MB/s. Same conclusion, weaker signal.
          *
-         * Larger writes amortise the per-call cost and flatten out past a few
-         * hundred kilobytes, which matches published socket measurements. 512 KiB
-         * is at the knee; the megabyte reached the same median but costs twice the
-         * live memory per queued frame.
+         * Capped just below the 1 MiB frame limit rather than at it: the payload
+         * length prefix is checked against MAX_FRAME_PAYLOAD on the receiving
+         * side, so a chunk that equals the cap leaves no room for metadata or for
+         * a future field and starts rejecting frames instead of sending them.
+         *
+         * Costs, accepted deliberately: with four receive slots this holds about
+         * 3.9 MiB awaiting a consumer, plus one encode copy in flight.
          */
-        const val DEFAULT_CHUNK_SIZE = 512 * 1024
+        const val DEFAULT_CHUNK_SIZE = 1008 * 1024
 
         /**
          * Minimum byte distance between progress emissions. 256 KiB keeps a
