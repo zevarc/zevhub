@@ -14,7 +14,19 @@ import java.nio.ByteOrder
  */
 internal class WireDecoder {
 
-    private var buffer: ByteArray = ByteArray(0)
+    /**
+     * Bytes of the current, incomplete frame. Grows to hold a whole frame and is
+     * reused afterwards.
+     *
+     * The previous version rebuilt this array on every feed: a megabyte frame
+     * arrives as sixty four 16 KiB reads, and copying the accumulator each time
+     * moved roughly 33 MiB to deliver 1 MiB. That is quadratic in frame size,
+     * which is why larger chunks measured no faster on a real device even though
+     * they were faster in isolation.
+     */
+    private var buffer: ByteArray = ByteArray(INITIAL_CAPACITY)
+
+    /** Bytes currently held in [buffer]. */
     private var length: Int = 0
 
     fun feed(bytes: ByteArray): List<WireFrame> {
@@ -22,11 +34,7 @@ internal class WireDecoder {
             return emptyList()
         }
 
-        val merged = ByteArray(length + bytes.size)
-        buffer.copyInto(merged, 0, 0, length)
-        bytes.copyInto(merged, length)
-        buffer = merged
-        length = merged.size
+        append(bytes)
 
         val frames = ArrayList<WireFrame>(2)
         while (true) {
@@ -63,6 +71,8 @@ internal class WireDecoder {
                 return frames
             }
 
+            // One copy out of the accumulator: the frame's own payload is what
+            // the caller keeps, so it has to be a stable array.
             val payload = buffer.copyOfRange(
                 WireConstants.HEADER_SIZE,
                 WireConstants.HEADER_SIZE + payloadLength
@@ -90,9 +100,31 @@ internal class WireDecoder {
                 )
             )
 
-            buffer = buffer.copyOfRange(totalSize, length)
-            length -= totalSize
+            // Drop the consumed frame by shifting the tail down, rather than
+            // reallocating. The tail is whatever of the next frame already
+            // arrived, normally nothing.
+            val remaining = length - totalSize
+            if (remaining > 0) {
+                buffer.copyInto(buffer, 0, totalSize, length)
+            }
+            length = remaining
         }
+    }
+
+    /** Grows the accumulator and appends [bytes] at [length]. */
+    private fun append(bytes: ByteArray) {
+        val needed = length + bytes.size
+        if (needed > buffer.size) {
+            // Grow to fit at least this frame, doubling so a stream of frames
+            // settles at one allocation instead of one per frame.
+            var capacity = buffer.size.coerceAtLeast(INITIAL_CAPACITY)
+            while (capacity < needed) {
+                capacity *= 2
+            }
+            buffer = buffer.copyOf(capacity)
+        }
+        bytes.copyInto(buffer, length)
+        length = needed
     }
 
     /**
@@ -154,6 +186,9 @@ internal class WireDecoder {
     }
 
     companion object {
+        /** Big enough for an ordinary frame, small enough to be cheap at startup. */
+        private const val INITIAL_CAPACITY = 64 * 1024
+
         private const val FRAME_ID_OFFSET = 4
         private const val PAYLOAD_LENGTH_OFFSET = 32
     }
