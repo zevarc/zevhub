@@ -29,7 +29,16 @@ internal class TcpTransport(
 
     private val closed = AtomicBoolean(false)
 
-    private val writeChannel = Channel<ByteArray>(capacity = 16)
+    /**
+     * Outbound queue.
+     *
+     * Kept shallow on purpose. Each element is a whole encoded frame, so a deep
+     * queue holds megabytes of live arrays and hands the collector steady work for
+     * no throughput gain: the socket is the slow end, and backpressure reaching the
+     * producer is what keeps memory flat. Two is enough to keep the writer busy
+     * across a scheduling hop.
+     */
+    private val writeChannel = Channel<ByteArray>(capacity = 2)
 
     private val incoming = Channel<ByteArray>(capacity = 64)
 

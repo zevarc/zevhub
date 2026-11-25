@@ -214,7 +214,17 @@ internal class TransferImpl(
     }
 
     companion object {
-        const val DEFAULT_CHUNK_SIZE = 256 * 1024
+        /**
+         * Bytes handed to the wire per frame.
+         *
+         * Smaller than the previous 256 KiB because the per-frame costs — the
+         * encode copy, queue residency, a progress state update — scale with it,
+         * while the socket gains nothing: it segments to the path MTU anyway.
+         * On loopback the two were within noise of each other, so the tie was
+         * broken by memory: 64 KiB keeps the queue's live set small enough that
+         * the collector has little to do during a transfer.
+         */
+        const val DEFAULT_CHUNK_SIZE = 64 * 1024
 
         /**
          * Minimum byte distance between progress emissions. 256 KiB keeps a
