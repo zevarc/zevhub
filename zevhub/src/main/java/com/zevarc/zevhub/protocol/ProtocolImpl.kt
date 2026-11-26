@@ -78,8 +78,13 @@ internal class ProtocolImpl(
     private val decodeJob = scope.launch {
         try {
             transport.receive().collect { bytes ->
+                // Any byte proves the peer is alive. Resetting only when a whole
+                // frame decoded meant a large frame in flight counted as silence:
+                // a megabyte arrives as sixty-four reads, and if they took longer
+                // than the watchdog window the peer was declared dead mid-transfer
+                // and the connection reset under it.
+                silentProbes = 0
                 for (frame in decoder.feed(bytes)) {
-                    silentProbes = 0
                     validate(frame)
                     when (frame.kind) {
                         ProtocolKind.MESSAGE.value -> {
@@ -189,10 +194,14 @@ internal class ProtocolImpl(
         const val HEARTBEAT_INTERVAL_MS = 3_000L
 
         /**
-         * Probes unanswered before the peer is declared gone; 4 x 3s = 12s of
-         * silence.
+         * Probes unanswered before the peer is declared gone: 20 x 3s = 60s.
+         *
+         * Generous because silence is now measured in bytes, not frames, but a
+         * stalled write on a busy device can still hold the decode loop off for
+         * seconds. A watchdog that fires into that window kills working
+         * transfers, which is far worse than noticing a dead peer a minute late.
          */
-        const val MAX_SILENT_PROBES = 4
+        const val MAX_SILENT_PROBES = 20
     }
 
     /**
